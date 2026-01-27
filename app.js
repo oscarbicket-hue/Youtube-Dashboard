@@ -1,8 +1,15 @@
 // OQS Media — YouTube Analytics Dashboard
 
+const API_KEY = 'AIzaSyAy2lvTU_Uurhxp6BXS_8yOBvsd0B1OMN4';
+const CHANNEL_IDS = [
+  'UCj87bMLg-sb319zhcJrxz6A',  // Spectator
+  'UCMxiv15iK_MFayY_3fU9loQ',  // UnHerd
+  'UCJMC-44oT9l97ra5iemDPiA',  // Channel 3
+  'UChvbiD-vtewbaXD71UCa-pA',  // Channel 4
+];
+
 const CHANNEL_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6'];
 const REFRESH_INTERVAL = 60_000; // 1 minute for subscriber count refresh
-const API_BASE = 'http://localhost:3001'; // Backend server URL
 
 let channelData = [];
 let allVideos = [];
@@ -14,7 +21,6 @@ let currentSort = { videos: { field: 'views', direction: 'desc' }, shorts: { fie
 // ── Bootstrap ──────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Hide setup modal since credentials are hardwired
   document.getElementById('setup-modal').classList.add('hidden');
   showDashboard();
 
@@ -44,19 +50,18 @@ function startAutoRefresh() {
 
 // ── API Helpers ────────────────────────────────────────────────
 
-async function fetchFromBackend(endpoint) {
-  try {
-    const res = await fetch(`${API_BASE}${endpoint}`);
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      const msg = err?.error || res.statusText;
-      throw new Error(`API error: ${msg}`);
-    }
-    return res.json();
-  } catch (err) {
-    console.error(`Failed to fetch from ${endpoint}:`, err);
-    throw err;
+async function ytFetch(endpoint, params) {
+  const url = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
+  params.key = API_KEY;
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+
+  const res = await fetch(url);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const msg = err?.error?.message || res.statusText;
+    throw new Error(`YouTube API error: ${msg}`);
   }
+  return res.json();
 }
 
 // ── Data Fetching ──────────────────────────────────────────────
@@ -64,12 +69,29 @@ async function fetchFromBackend(endpoint) {
 async function fetchAllData() {
   showLoading(true);
   try {
-    const data = await fetchFromBackend('/api/youtube-data');
+    // Fetch channel info
+    const channelRes = await ytFetch('channels', {
+      part: 'snippet,statistics',
+      id: CHANNEL_IDS.join(','),
+    });
 
-    channelData = data.channelData;
-    allVideos = data.allVideos;
-    regularVideos = data.regularVideos;
-    shortsVideos = data.shortsVideos;
+    channelData = (channelRes.items || []).map((ch, i) => ({
+      id: ch.id,
+      title: ch.snippet.title,
+      customUrl: ch.snippet.customUrl || '',
+      thumbnail: ch.snippet.thumbnails.default.url,
+      subscribers: parseInt(ch.statistics.subscriberCount, 10) || 0,
+      totalViews: parseInt(ch.statistics.viewCount, 10) || 0,
+      videoCount: parseInt(ch.statistics.videoCount, 10) || 0,
+      color: CHANNEL_COLORS[i % CHANNEL_COLORS.length],
+    }));
+
+    // Fetch recent videos for each channel
+    const videoPromises = channelData.map(ch => fetchRecentVideos(ch));
+    const videoResults = await Promise.all(videoPromises);
+    allVideos = videoResults.flat();
+
+    separateVideoTypes();
 
     // Render everything
     renderTopPerformer();
@@ -88,15 +110,58 @@ async function fetchAllData() {
   }
 }
 
+async function fetchRecentVideos(channel) {
+  try {
+    // Step 1: Search for recent uploads
+    const searchRes = await ytFetch('search', {
+      part: 'snippet',
+      channelId: channel.id,
+      order: 'date',
+      type: 'video',
+      maxResults: 15,
+    });
+
+    const videoIds = (searchRes.items || []).map(v => v.id.videoId).filter(Boolean);
+    if (videoIds.length === 0) return [];
+
+    // Step 2: Get full statistics and content details
+    const statsRes = await ytFetch('videos', {
+      part: 'snippet,statistics,contentDetails',
+      id: videoIds.join(','),
+    });
+
+    return (statsRes.items || []).map(v => ({
+      id: v.id,
+      title: v.snippet.title,
+      thumbnail: v.snippet.thumbnails.medium?.url || v.snippet.thumbnails.default?.url,
+      publishedAt: v.snippet.publishedAt,
+      channelId: channel.id,
+      channelTitle: channel.title,
+      channelColor: channel.color,
+      views: parseInt(v.statistics.viewCount, 10) || 0,
+      likes: parseInt(v.statistics.likeCount, 10) || 0,
+      comments: parseInt(v.statistics.commentCount, 10) || 0,
+      duration: v.contentDetails?.duration || '',
+      isShort: isYouTubeShort(v.contentDetails?.duration || '', v.snippet.title),
+    }));
+  } catch (err) {
+    console.error(`Failed to fetch videos for channel ${channel.id}:`, err);
+    return [];
+  }
+}
+
 async function fetchSubscriberCounts() {
   try {
-    const data = await fetchFromBackend('/api/subscriber-counts');
+    const channelRes = await ytFetch('channels', {
+      part: 'statistics',
+      id: CHANNEL_IDS.join(','),
+    });
 
-    data.subscriberData.forEach(item => {
+    (channelRes.items || []).forEach(item => {
       const ch = channelData.find(c => c.id === item.id);
       if (ch) {
-        ch.subscribers = item.subscribers;
-        ch.totalViews = item.totalViews;
+        ch.subscribers = parseInt(item.statistics.subscriberCount, 10) || 0;
+        ch.totalViews = parseInt(item.statistics.viewCount, 10) || 0;
       }
     });
 
@@ -109,6 +174,21 @@ async function fetchSubscriberCounts() {
 }
 
 // ── Video Type Separation ──────────────────────────────────────
+
+function isYouTubeShort(duration, title) {
+  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return false;
+
+  const hours = parseInt(match[1] || '0', 10);
+  const minutes = parseInt(match[2] || '0', 10);
+  const seconds = parseInt(match[3] || '0', 10);
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+
+  if (totalSeconds <= 60 && totalSeconds > 0) return true;
+  if (title.toLowerCase().includes('#shorts') || title.toLowerCase().includes('#short')) return true;
+
+  return false;
+}
 
 function separateVideoTypes() {
   regularVideos = allVideos.filter(v => !v.isShort);
