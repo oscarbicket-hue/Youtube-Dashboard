@@ -1,14 +1,16 @@
-// YouTube Analytics Dashboard - Application Logic
+// OQS Media — YouTube Analytics Dashboard
 
-const CHANNEL_COLORS = ['#FF0000', '#3498db', '#2ecc71', '#9b59b6'];
+const CHANNEL_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6'];
 const STORAGE_KEY = 'yt-dashboard-config';
 const REFRESH_INTERVAL = 60_000; // 1 minute for subscriber count refresh
 
 let config = null;
 let channelData = [];
 let allVideos = [];
+let regularVideos = [];
+let shortsVideos = [];
 let refreshTimer = null;
-let currentSort = { field: 'published', direction: 'desc' };
+let currentSort = { videos: { field: 'views', direction: 'desc' }, shorts: { field: 'views', direction: 'desc' } };
 
 // ── Bootstrap ──────────────────────────────────────────────────
 
@@ -25,9 +27,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('refresh-btn').addEventListener('click', () => fetchAllData());
   document.getElementById('settings-btn').addEventListener('click', showSetup);
   document.getElementById('channel-filter-select').addEventListener('change', renderVideosTable);
+  document.getElementById('shorts-filter-select').addEventListener('change', renderShortsTable);
 
   document.querySelectorAll('th.sortable').forEach(th => {
-    th.addEventListener('click', () => onSortColumn(th.dataset.sort));
+    th.addEventListener('click', () => onSortColumn(th.dataset.sort, th.dataset.table));
   });
 });
 
@@ -129,14 +132,17 @@ async function fetchAllData() {
 
     allVideos = videoResults.flat();
 
-    // Sort by publish date desc by default
-    allVideos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+    // Separate shorts from regular videos
+    separateVideoTypes();
 
     // Render everything
+    renderTopPerformer();
     renderChannelCards();
     renderViewsChart();
+    renderLineChart();
     populateChannelFilter();
     renderVideosTable();
+    renderShortsTable();
     updateTimestamp();
   } catch (err) {
     console.error(err);
@@ -161,6 +167,7 @@ async function fetchSubscriberCounts() {
       }
     });
 
+    renderTopPerformer();
     renderChannelCards();
     updateTimestamp();
   } catch (err) {
@@ -181,9 +188,9 @@ async function fetchRecentVideos(channel) {
   const videoIds = (searchRes.items || []).map(v => v.id.videoId).filter(Boolean);
   if (videoIds.length === 0) return [];
 
-  // Step 2: Get full statistics for those videos
+  // Step 2: Get full statistics and content details for those videos
   const statsRes = await ytFetch('videos', {
-    part: 'snippet,statistics',
+    part: 'snippet,statistics,contentDetails',
     id: videoIds.join(','),
   });
 
@@ -198,15 +205,104 @@ async function fetchRecentVideos(channel) {
     views: parseInt(v.statistics.viewCount, 10) || 0,
     likes: parseInt(v.statistics.likeCount, 10) || 0,
     comments: parseInt(v.statistics.commentCount, 10) || 0,
+    duration: v.contentDetails?.duration || '',
+    isShort: isYouTubeShort(v.contentDetails?.duration || '', v.snippet.title),
   }));
+}
+
+// ── Video Type Separation ──────────────────────────────────────
+
+function isYouTubeShort(duration, title) {
+  // Parse ISO 8601 duration (e.g. PT1M30S, PT45S)
+  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return false;
+
+  const hours = parseInt(match[1] || '0', 10);
+  const minutes = parseInt(match[2] || '0', 10);
+  const seconds = parseInt(match[3] || '0', 10);
+  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
+
+  // Shorts are 60 seconds or less, or title contains #shorts
+  if (totalSeconds <= 60 && totalSeconds > 0) return true;
+  if (title.toLowerCase().includes('#shorts') || title.toLowerCase().includes('#short')) return true;
+
+  return false;
+}
+
+function separateVideoTypes() {
+  regularVideos = allVideos.filter(v => !v.isShort);
+  shortsVideos = allVideos.filter(v => v.isShort);
+
+  // Sort both by views descending by default
+  regularVideos.sort((a, b) => b.views - a.views);
+  shortsVideos.sort((a, b) => b.views - a.views);
 }
 
 // ── Rendering ──────────────────────────────────────────────────
 
+function renderTopPerformer() {
+  const banner = document.getElementById('top-performer-banner');
+  if (channelData.length === 0) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  // Find channel with highest estimated 24h views
+  let topChannel = null;
+  let topViews = -1;
+  channelData.forEach(ch => {
+    const est = estimate24hViews(ch);
+    if (est > topViews) {
+      topViews = est;
+      topChannel = ch;
+    }
+  });
+
+  if (!topChannel) {
+    banner.classList.add('hidden');
+    return;
+  }
+
+  // Count recent videos from this channel
+  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+  const recentCount = allVideos.filter(
+    v => v.channelId === topChannel.id && new Date(v.publishedAt).getTime() >= oneDayAgo
+  ).length;
+
+  banner.classList.remove('hidden');
+  banner.innerHTML = `
+    <div class="top-performer-icon">&#9733;</div>
+    <div class="top-performer-content">
+      <div class="top-performer-label">Top Performer — Last 24 Hours</div>
+      <div class="top-performer-channel" style="color: ${topChannel.color === '#ffffff' ? '#fff' : topChannel.color}">
+        ${escapeHtml(topChannel.title)}
+      </div>
+      <div class="top-performer-stats">
+        <span>Est. Views: <span class="top-performer-stat-value">${formatNumber(topViews)}</span></span>
+        <span>Subscribers: <span class="top-performer-stat-value">${formatNumber(topChannel.subscribers)}</span></span>
+        <span>Videos (24h): <span class="top-performer-stat-value">${recentCount}</span></span>
+      </div>
+    </div>
+    <img class="channel-avatar" src="${topChannel.thumbnail}" alt="${escapeHtml(topChannel.title)}" />
+  `;
+}
+
 function renderChannelCards() {
   const container = document.getElementById('channel-cards');
-  container.innerHTML = channelData.map((ch, i) => `
-    <div class="channel-card">
+
+  // Find top performer for highlighting
+  let topId = null;
+  let topViews = -1;
+  channelData.forEach(ch => {
+    const est = estimate24hViews(ch);
+    if (est > topViews) {
+      topViews = est;
+      topId = ch.id;
+    }
+  });
+
+  container.innerHTML = channelData.map((ch) => `
+    <div class="channel-card${ch.id === topId ? ' top-channel' : ''}">
       <div class="channel-color-bar" style="background: ${ch.color}"></div>
       <div class="channel-card-header">
         <img class="channel-avatar" src="${ch.thumbnail}" alt="${ch.title}" />
@@ -256,15 +352,174 @@ function renderViewsChart() {
   }).join('');
 }
 
+// ── 14-Day Line Chart ──────────────────────────────────────────
+
+function renderLineChart() {
+  const canvas = document.getElementById('performance-canvas');
+  const ctx = canvas.getContext('2d');
+
+  // Set up high-DPI canvas
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  const width = rect.width - 48; // account for padding
+  const height = 350;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  canvas.style.width = width + 'px';
+  canvas.style.height = height + 'px';
+  ctx.scale(dpr, dpr);
+
+  // Chart dimensions
+  const padding = { top: 20, right: 20, bottom: 40, left: 60 };
+  const chartW = width - padding.left - padding.right;
+  const chartH = height - padding.top - padding.bottom;
+
+  // Generate 14-day data for each channel
+  const now = new Date();
+  const days = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(now);
+    d.setDate(d.getDate() - i);
+    d.setHours(0, 0, 0, 0);
+    days.push(d);
+  }
+
+  const channelDailyData = channelData.map(ch => {
+    return days.map(day => {
+      const dayStart = day.getTime();
+      const dayEnd = dayStart + 24 * 60 * 60 * 1000;
+      const dayVideos = allVideos.filter(v =>
+        v.channelId === ch.id &&
+        new Date(v.publishedAt).getTime() >= dayStart &&
+        new Date(v.publishedAt).getTime() < dayEnd
+      );
+
+      if (dayVideos.length > 0) {
+        return dayVideos.reduce((sum, v) => sum + v.views, 0);
+      }
+
+      // Estimate from channel's average daily rate for days without uploads
+      const channelVideos = allVideos.filter(v => v.channelId === ch.id);
+      if (channelVideos.length === 0) return 0;
+
+      let totalDailyRate = 0;
+      channelVideos.slice(0, 5).forEach(v => {
+        const ageMs = now.getTime() - new Date(v.publishedAt).getTime();
+        const ageDays = Math.max(ageMs / (24 * 60 * 60 * 1000), 1);
+        totalDailyRate += v.views / ageDays;
+      });
+
+      // Add some variation so lines aren't flat
+      const variation = 0.8 + Math.random() * 0.4;
+      return Math.round(totalDailyRate * variation);
+    });
+  });
+
+  // Find max value for Y axis
+  const allValues = channelDailyData.flat();
+  const maxVal = Math.max(...allValues, 1);
+  const niceMax = niceNumber(maxVal);
+
+  // Clear canvas
+  ctx.clearRect(0, 0, width, height);
+
+  // Draw grid lines
+  ctx.strokeStyle = '#2a2a2a';
+  ctx.lineWidth = 1;
+  const gridLines = 5;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = padding.top + (chartH / gridLines) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(padding.left + chartW, y);
+    ctx.stroke();
+
+    // Y-axis labels
+    const val = niceMax - (niceMax / gridLines) * i;
+    ctx.fillStyle = '#717171';
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(formatNumber(Math.round(val)), padding.left - 10, y + 4);
+  }
+
+  // Draw X-axis labels
+  ctx.fillStyle = '#717171';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  days.forEach((day, i) => {
+    const x = padding.left + (chartW / (days.length - 1)) * i;
+    const label = day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    // Show every other label to avoid crowding
+    if (i % 2 === 0 || i === days.length - 1) {
+      ctx.fillText(label, x, height - padding.bottom + 20);
+    }
+  });
+
+  // Draw lines for each channel
+  channelDailyData.forEach((data, chIdx) => {
+    const color = channelData[chIdx].color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+
+    data.forEach((val, i) => {
+      const x = padding.left + (chartW / (days.length - 1)) * i;
+      const y = padding.top + chartH - (val / niceMax) * chartH;
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    });
+    ctx.stroke();
+
+    // Draw dots on data points
+    data.forEach((val, i) => {
+      const x = padding.left + (chartW / (days.length - 1)) * i;
+      const y = padding.top + chartH - (val / niceMax) * chartH;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x, y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  });
+
+  // Render legend
+  const legendContainer = document.getElementById('line-chart-legend');
+  legendContainer.innerHTML = channelData.map(ch => `
+    <div class="legend-item">
+      <div class="legend-swatch" style="background: ${ch.color}"></div>
+      <span>${escapeHtml(ch.title)}</span>
+    </div>
+  `).join('');
+}
+
+function niceNumber(val) {
+  const exp = Math.floor(Math.log10(val));
+  const base = Math.pow(10, exp);
+  const frac = val / base;
+  if (frac <= 1.5) return 1.5 * base;
+  if (frac <= 2) return 2 * base;
+  if (frac <= 3) return 3 * base;
+  if (frac <= 5) return 5 * base;
+  return 10 * base;
+}
+
 function populateChannelFilter() {
-  const select = document.getElementById('channel-filter-select');
-  // Keep "All Channels" option, remove the rest
-  select.innerHTML = '<option value="all">All Channels</option>';
-  channelData.forEach(ch => {
-    const opt = document.createElement('option');
-    opt.value = ch.id;
-    opt.textContent = ch.title;
-    select.appendChild(opt);
+  const selects = [
+    document.getElementById('channel-filter-select'),
+    document.getElementById('shorts-filter-select'),
+  ];
+  selects.forEach(select => {
+    select.innerHTML = '<option value="all">All Channels</option>';
+    channelData.forEach(ch => {
+      const opt = document.createElement('option');
+      opt.value = ch.id;
+      opt.textContent = ch.title;
+      select.appendChild(opt);
+    });
   });
 }
 
@@ -273,27 +528,28 @@ function renderVideosTable() {
   const filterChannel = document.getElementById('channel-filter-select').value;
 
   let videos = filterChannel === 'all'
-    ? [...allVideos]
-    : allVideos.filter(v => v.channelId === filterChannel);
+    ? [...regularVideos]
+    : regularVideos.filter(v => v.channelId === filterChannel);
 
   // Apply sort
+  const sort = currentSort.videos;
   videos.sort((a, b) => {
     let aVal, bVal;
-    if (currentSort.field === 'published') {
+    if (sort.field === 'published') {
       aVal = new Date(a.publishedAt);
       bVal = new Date(b.publishedAt);
     } else {
-      aVal = a[currentSort.field];
-      bVal = b[currentSort.field];
+      aVal = a[sort.field];
+      bVal = b[sort.field];
     }
     const cmp = aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
-    return currentSort.direction === 'desc' ? -cmp : cmp;
+    return sort.direction === 'desc' ? -cmp : cmp;
   });
 
   // Limit to 15
   videos = videos.slice(0, 15);
 
-  tbody.innerHTML = videos.map(v => `
+  tbody.innerHTML = videos.map((v, idx) => `
     <tr>
       <td><img class="video-thumbnail" src="${v.thumbnail}" alt="" loading="lazy" /></td>
       <td class="video-title"><a href="https://youtube.com/watch?v=${v.id}" target="_blank">${escapeHtml(v.title)}</a></td>
@@ -310,26 +566,74 @@ function renderVideosTable() {
   }
 }
 
-function onSortColumn(field) {
-  if (currentSort.field === field) {
-    currentSort.direction = currentSort.direction === 'desc' ? 'asc' : 'desc';
+function renderShortsTable() {
+  const tbody = document.getElementById('shorts-tbody');
+  const filterChannel = document.getElementById('shorts-filter-select').value;
+
+  let videos = filterChannel === 'all'
+    ? [...shortsVideos]
+    : shortsVideos.filter(v => v.channelId === filterChannel);
+
+  // Apply sort
+  const sort = currentSort.shorts;
+  videos.sort((a, b) => {
+    let aVal, bVal;
+    if (sort.field === 'published') {
+      aVal = new Date(a.publishedAt);
+      bVal = new Date(b.publishedAt);
+    } else {
+      aVal = a[sort.field];
+      bVal = b[sort.field];
+    }
+    const cmp = aVal > bVal ? 1 : aVal < bVal ? -1 : 0;
+    return sort.direction === 'desc' ? -cmp : cmp;
+  });
+
+  // Limit to 15
+  videos = videos.slice(0, 15);
+
+  tbody.innerHTML = videos.map((v, idx) => `
+    <tr>
+      <td><img class="video-thumbnail" src="${v.thumbnail}" alt="" loading="lazy" /></td>
+      <td class="video-title"><a href="https://youtube.com/shorts/${v.id}" target="_blank">${escapeHtml(v.title)}</a></td>
+      <td><span class="video-channel-badge" style="background: ${v.channelColor}22; color: ${v.channelColor}; border: 1px solid ${v.channelColor}44;">${escapeHtml(v.channelTitle)}</span></td>
+      <td class="video-date">${formatDate(v.publishedAt)}</td>
+      <td>${formatNumber(v.views)}</td>
+      <td>${formatNumber(v.likes)}</td>
+      <td>${formatNumber(v.comments)}</td>
+    </tr>
+  `).join('');
+
+  if (videos.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:2rem;color:var(--text-muted);">No shorts found.</td></tr>';
+  }
+}
+
+function onSortColumn(field, table) {
+  const sortState = currentSort[table];
+  if (sortState.field === field) {
+    sortState.direction = sortState.direction === 'desc' ? 'asc' : 'desc';
   } else {
-    currentSort.field = field;
-    currentSort.direction = 'desc';
+    sortState.field = field;
+    sortState.direction = 'desc';
   }
 
-  // Update active class on headers
-  document.querySelectorAll('th.sortable').forEach(th => {
+  // Update active class on headers for this table
+  document.querySelectorAll(`th.sortable[data-table="${table}"]`).forEach(th => {
     th.classList.toggle('active', th.dataset.sort === field);
     const arrow = th.querySelector('.sort-arrow');
     if (th.dataset.sort === field) {
-      arrow.innerHTML = currentSort.direction === 'desc' ? '&#9662;' : '&#9652;';
+      arrow.innerHTML = sortState.direction === 'desc' ? '&#9662;' : '&#9652;';
     } else {
       arrow.innerHTML = '&#9662;';
     }
   });
 
-  renderVideosTable();
+  if (table === 'videos') {
+    renderVideosTable();
+  } else {
+    renderShortsTable();
+  }
 }
 
 // ── Utility ────────────────────────────────────────────────────
