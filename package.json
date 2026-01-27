@@ -1,0 +1,11 @@
+{
+  "name": "youtube-dashboard",
+  "version": "1.0.0",
+  "description": "YouTube Analytics Dashboard - View stats for 4 channels including subscriber counts, recent video metrics, and 24-hour view estimates.",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve ."
+  },
+  "keywords": ["youtube", "dashboard", "analytics"],
+  "license": "MIT"
+}
