@@ -1,10 +1,9 @@
 // OQS Media — YouTube Analytics Dashboard
 
 const CHANNEL_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6'];
-const STORAGE_KEY = 'yt-dashboard-config';
 const REFRESH_INTERVAL = 60_000; // 1 minute for subscriber count refresh
+const API_BASE = 'http://localhost:3001'; // Backend server URL
 
-let config = null;
 let channelData = [];
 let allVideos = [];
 let regularVideos = [];
@@ -15,17 +14,11 @@ let currentSort = { videos: { field: 'views', direction: 'desc' }, shorts: { fie
 // ── Bootstrap ──────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    config = JSON.parse(saved);
-    showDashboard();
-  } else {
-    showSetup();
-  }
+  // Hide setup modal since credentials are hardwired
+  document.getElementById('setup-modal').classList.add('hidden');
+  showDashboard();
 
-  document.getElementById('save-config').addEventListener('click', onSaveConfig);
   document.getElementById('refresh-btn').addEventListener('click', () => fetchAllData());
-  document.getElementById('settings-btn').addEventListener('click', showSetup);
   document.getElementById('channel-filter-select').addEventListener('change', renderVideosTable);
   document.getElementById('shorts-filter-select').addEventListener('change', renderShortsTable);
 
@@ -34,48 +27,9 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// ── Setup / Config ─────────────────────────────────────────────
-
-function showSetup() {
-  document.getElementById('setup-modal').classList.remove('hidden');
-  if (config) {
-    document.getElementById('api-key').value = config.apiKey || '';
-    config.channelIds.forEach((id, i) => {
-      const input = document.querySelector(`.channel-input[data-index="${i}"]`);
-      if (input) input.value = id;
-    });
-  }
-}
-
-function onSaveConfig() {
-  const apiKey = document.getElementById('api-key').value.trim();
-  const channelIds = Array.from(document.querySelectorAll('.channel-input'))
-    .map(el => el.value.trim())
-    .filter(Boolean);
-
-  const errorEl = document.getElementById('setup-error');
-
-  if (!apiKey) {
-    errorEl.textContent = 'Please enter a YouTube Data API key.';
-    return;
-  }
-  if (channelIds.length === 0) {
-    errorEl.textContent = 'Please enter at least one channel ID.';
-    return;
-  }
-  if (channelIds.length > 4) {
-    errorEl.textContent = 'Maximum of 4 channels supported.';
-    return;
-  }
-
-  errorEl.textContent = '';
-  config = { apiKey, channelIds };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-  showDashboard();
-}
+// ── Dashboard Setup ────────────────────────────────────────────
 
 async function showDashboard() {
-  document.getElementById('setup-modal').classList.add('hidden');
   document.getElementById('dashboard').classList.remove('hidden');
   await fetchAllData();
   startAutoRefresh();
@@ -90,18 +44,19 @@ function startAutoRefresh() {
 
 // ── API Helpers ────────────────────────────────────────────────
 
-async function ytFetch(endpoint, params) {
-  const url = new URL(`https://www.googleapis.com/youtube/v3/${endpoint}`);
-  params.key = config.apiKey;
-  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-
-  const res = await fetch(url);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const msg = err?.error?.message || res.statusText;
-    throw new Error(`YouTube API error: ${msg}`);
+async function fetchFromBackend(endpoint) {
+  try {
+    const res = await fetch(`${API_BASE}${endpoint}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const msg = err?.error || res.statusText;
+      throw new Error(`API error: ${msg}`);
+    }
+    return res.json();
+  } catch (err) {
+    console.error(`Failed to fetch from ${endpoint}:`, err);
+    throw err;
   }
-  return res.json();
 }
 
 // ── Data Fetching ──────────────────────────────────────────────
@@ -109,31 +64,12 @@ async function ytFetch(endpoint, params) {
 async function fetchAllData() {
   showLoading(true);
   try {
-    // Fetch channel info
-    const channelRes = await ytFetch('channels', {
-      part: 'snippet,statistics',
-      id: config.channelIds.join(','),
-    });
+    const data = await fetchFromBackend('/api/youtube-data');
 
-    channelData = (channelRes.items || []).map((ch, i) => ({
-      id: ch.id,
-      title: ch.snippet.title,
-      customUrl: ch.snippet.customUrl || '',
-      thumbnail: ch.snippet.thumbnails.default.url,
-      subscribers: parseInt(ch.statistics.subscriberCount, 10) || 0,
-      totalViews: parseInt(ch.statistics.viewCount, 10) || 0,
-      videoCount: parseInt(ch.statistics.videoCount, 10) || 0,
-      color: CHANNEL_COLORS[i % CHANNEL_COLORS.length],
-    }));
-
-    // Fetch recent videos for each channel in parallel
-    const videoPromises = channelData.map(ch => fetchRecentVideos(ch));
-    const videoResults = await Promise.all(videoPromises);
-
-    allVideos = videoResults.flat();
-
-    // Separate shorts from regular videos
-    separateVideoTypes();
+    channelData = data.channelData;
+    allVideos = data.allVideos;
+    regularVideos = data.regularVideos;
+    shortsVideos = data.shortsVideos;
 
     // Render everything
     renderTopPerformer();
@@ -154,16 +90,13 @@ async function fetchAllData() {
 
 async function fetchSubscriberCounts() {
   try {
-    const channelRes = await ytFetch('channels', {
-      part: 'statistics',
-      id: config.channelIds.join(','),
-    });
+    const data = await fetchFromBackend('/api/subscriber-counts');
 
-    (channelRes.items || []).forEach(item => {
+    data.subscriberData.forEach(item => {
       const ch = channelData.find(c => c.id === item.id);
       if (ch) {
-        ch.subscribers = parseInt(item.statistics.subscriberCount, 10) || 0;
-        ch.totalViews = parseInt(item.statistics.viewCount, 10) || 0;
+        ch.subscribers = item.subscribers;
+        ch.totalViews = item.totalViews;
       }
     });
 
@@ -175,65 +108,12 @@ async function fetchSubscriberCounts() {
   }
 }
 
-async function fetchRecentVideos(channel) {
-  // Step 1: Search for recent uploads
-  const searchRes = await ytFetch('search', {
-    part: 'snippet',
-    channelId: channel.id,
-    order: 'date',
-    type: 'video',
-    maxResults: 15,
-  });
-
-  const videoIds = (searchRes.items || []).map(v => v.id.videoId).filter(Boolean);
-  if (videoIds.length === 0) return [];
-
-  // Step 2: Get full statistics and content details for those videos
-  const statsRes = await ytFetch('videos', {
-    part: 'snippet,statistics,contentDetails',
-    id: videoIds.join(','),
-  });
-
-  return (statsRes.items || []).map(v => ({
-    id: v.id,
-    title: v.snippet.title,
-    thumbnail: v.snippet.thumbnails.medium?.url || v.snippet.thumbnails.default?.url,
-    publishedAt: v.snippet.publishedAt,
-    channelId: channel.id,
-    channelTitle: channel.title,
-    channelColor: channel.color,
-    views: parseInt(v.statistics.viewCount, 10) || 0,
-    likes: parseInt(v.statistics.likeCount, 10) || 0,
-    comments: parseInt(v.statistics.commentCount, 10) || 0,
-    duration: v.contentDetails?.duration || '',
-    isShort: isYouTubeShort(v.contentDetails?.duration || '', v.snippet.title),
-  }));
-}
-
 // ── Video Type Separation ──────────────────────────────────────
-
-function isYouTubeShort(duration, title) {
-  // Parse ISO 8601 duration (e.g. PT1M30S, PT45S)
-  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!match) return false;
-
-  const hours = parseInt(match[1] || '0', 10);
-  const minutes = parseInt(match[2] || '0', 10);
-  const seconds = parseInt(match[3] || '0', 10);
-  const totalSeconds = hours * 3600 + minutes * 60 + seconds;
-
-  // Shorts are 60 seconds or less, or title contains #shorts
-  if (totalSeconds <= 60 && totalSeconds > 0) return true;
-  if (title.toLowerCase().includes('#shorts') || title.toLowerCase().includes('#short')) return true;
-
-  return false;
-}
 
 function separateVideoTypes() {
   regularVideos = allVideos.filter(v => !v.isShort);
   shortsVideos = allVideos.filter(v => v.isShort);
 
-  // Sort both by views descending by default
   regularVideos.sort((a, b) => b.views - a.views);
   shortsVideos.sort((a, b) => b.views - a.views);
 }
@@ -247,7 +127,6 @@ function renderTopPerformer() {
     return;
   }
 
-  // Find channel with highest estimated 24h views
   let topChannel = null;
   let topViews = -1;
   channelData.forEach(ch => {
@@ -263,7 +142,6 @@ function renderTopPerformer() {
     return;
   }
 
-  // Count recent videos from this channel
   const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
   const recentCount = allVideos.filter(
     v => v.channelId === topChannel.id && new Date(v.publishedAt).getTime() >= oneDayAgo
@@ -290,7 +168,6 @@ function renderTopPerformer() {
 function renderChannelCards() {
   const container = document.getElementById('channel-cards');
 
-  // Find top performer for highlighting
   let topId = null;
   let topViews = -1;
   channelData.forEach(ch => {
@@ -301,36 +178,50 @@ function renderChannelCards() {
     }
   });
 
-  container.innerHTML = channelData.map((ch) => `
-    <div class="channel-card${ch.id === topId ? ' top-channel' : ''}">
-      <div class="channel-color-bar" style="background: ${ch.color}"></div>
-      <div class="channel-card-header">
-        <img class="channel-avatar" src="${ch.thumbnail}" alt="${ch.title}" />
-        <div>
-          <div class="channel-name">${escapeHtml(ch.title)}</div>
-          <div class="channel-handle">${escapeHtml(ch.customUrl)}</div>
+  container.innerHTML = channelData.map((ch) => {
+    const avgViews = calculateChannelAverage(ch);
+    const currentViews = estimate24hViews(ch);
+    const isBeating = currentViews >= avgViews;
+    const diffPercent = avgViews > 0 ? Math.round(((currentViews - avgViews) / avgViews) * 100) : 0;
+    const performanceText = isBeating
+      ? `+${diffPercent}% vs avg`
+      : `${diffPercent}% vs avg`;
+    const performanceColor = isBeating ? '#2ecc71' : '#e74c3c';
+
+    return `
+      <div class="channel-card${ch.id === topId ? ' top-channel' : ''}">
+        <div class="channel-color-bar" style="background: ${ch.color}"></div>
+        <div class="channel-card-header">
+          <img class="channel-avatar" src="${ch.thumbnail}" alt="${ch.title}" />
+          <div>
+            <div class="channel-name">${escapeHtml(ch.title)}</div>
+            <div class="channel-handle">${escapeHtml(ch.customUrl)}</div>
+          </div>
+        </div>
+        <div class="channel-stats">
+          <div class="stat-box">
+            <div class="stat-label">Subscribers</div>
+            <div class="stat-value subscribers">${formatNumber(ch.subscribers)}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Total Views</div>
+            <div class="stat-value views">${formatNumber(ch.totalViews)}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Videos</div>
+            <div class="stat-value videos">${formatNumber(ch.videoCount)}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Est. 24h Views</div>
+            <div class="stat-value recent-views">${formatNumber(currentViews)}</div>
+            <div class="performance-indicator" style="color: ${performanceColor}; font-size: 0.85em; margin-top: 0.25rem;">
+              ${performanceText}
+            </div>
+          </div>
         </div>
       </div>
-      <div class="channel-stats">
-        <div class="stat-box">
-          <div class="stat-label">Subscribers</div>
-          <div class="stat-value subscribers">${formatNumber(ch.subscribers)}</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-label">Total Views</div>
-          <div class="stat-value views">${formatNumber(ch.totalViews)}</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-label">Videos</div>
-          <div class="stat-value videos">${formatNumber(ch.videoCount)}</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-label">Est. 24h Views</div>
-          <div class="stat-value recent-views">${formatNumber(estimate24hViews(ch))}</div>
-        </div>
-      </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
 function renderViewsChart() {
@@ -352,7 +243,7 @@ function renderViewsChart() {
   }).join('');
 }
 
-// ── 14-Day Line Chart ──────────────────────────────────────────
+// ── 30-Day Line Chart ──────────────────────────────────────────
 
 function renderLineChart() {
   const canvas = document.getElementById('performance-canvas');
@@ -361,7 +252,7 @@ function renderLineChart() {
   // Set up high-DPI canvas
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.parentElement.getBoundingClientRect();
-  const width = rect.width - 48; // account for padding
+  const width = rect.width - 48;
   const height = 350;
   canvas.width = width * dpr;
   canvas.height = height * dpr;
@@ -374,10 +265,10 @@ function renderLineChart() {
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
 
-  // Generate 14-day data for each channel
+  // Generate 30-day data for each channel
   const now = new Date();
   const days = [];
-  for (let i = 13; i >= 0; i--) {
+  for (let i = 29; i >= 0; i--) {
     const d = new Date(now);
     d.setDate(d.getDate() - i);
     d.setHours(0, 0, 0, 0);
@@ -398,7 +289,6 @@ function renderLineChart() {
         return dayVideos.reduce((sum, v) => sum + v.views, 0);
       }
 
-      // Estimate from channel's average daily rate for days without uploads
       const channelVideos = allVideos.filter(v => v.channelId === ch.id);
       if (channelVideos.length === 0) return 0;
 
@@ -409,18 +299,15 @@ function renderLineChart() {
         totalDailyRate += v.views / ageDays;
       });
 
-      // Add some variation so lines aren't flat
       const variation = 0.8 + Math.random() * 0.4;
       return Math.round(totalDailyRate * variation);
     });
   });
 
-  // Find max value for Y axis
   const allValues = channelDailyData.flat();
   const maxVal = Math.max(...allValues, 1);
   const niceMax = niceNumber(maxVal);
 
-  // Clear canvas
   ctx.clearRect(0, 0, width, height);
 
   // Draw grid lines
@@ -434,7 +321,6 @@ function renderLineChart() {
     ctx.lineTo(padding.left + chartW, y);
     ctx.stroke();
 
-    // Y-axis labels
     const val = niceMax - (niceMax / gridLines) * i;
     ctx.fillStyle = '#717171';
     ctx.font = '11px Inter, sans-serif';
@@ -449,8 +335,7 @@ function renderLineChart() {
   days.forEach((day, i) => {
     const x = padding.left + (chartW / (days.length - 1)) * i;
     const label = day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    // Show every other label to avoid crowding
-    if (i % 2 === 0 || i === days.length - 1) {
+    if (i % 3 === 0 || i === days.length - 1) {
       ctx.fillText(label, x, height - padding.bottom + 20);
     }
   });
@@ -475,7 +360,6 @@ function renderLineChart() {
     });
     ctx.stroke();
 
-    // Draw dots on data points
     data.forEach((val, i) => {
       const x = padding.left + (chartW / (days.length - 1)) * i;
       const y = padding.top + chartH - (val / niceMax) * chartH;
@@ -531,7 +415,6 @@ function renderVideosTable() {
     ? [...regularVideos]
     : regularVideos.filter(v => v.channelId === filterChannel);
 
-  // Apply sort
   const sort = currentSort.videos;
   videos.sort((a, b) => {
     let aVal, bVal;
@@ -546,7 +429,6 @@ function renderVideosTable() {
     return sort.direction === 'desc' ? -cmp : cmp;
   });
 
-  // Limit to 15
   videos = videos.slice(0, 15);
 
   tbody.innerHTML = videos.map((v, idx) => `
@@ -574,7 +456,6 @@ function renderShortsTable() {
     ? [...shortsVideos]
     : shortsVideos.filter(v => v.channelId === filterChannel);
 
-  // Apply sort
   const sort = currentSort.shorts;
   videos.sort((a, b) => {
     let aVal, bVal;
@@ -589,7 +470,6 @@ function renderShortsTable() {
     return sort.direction === 'desc' ? -cmp : cmp;
   });
 
-  // Limit to 15
   videos = videos.slice(0, 15);
 
   tbody.innerHTML = videos.map((v, idx) => `
@@ -618,7 +498,6 @@ function onSortColumn(field, table) {
     sortState.direction = 'desc';
   }
 
-  // Update active class on headers for this table
   document.querySelectorAll(`th.sortable[data-table="${table}"]`).forEach(th => {
     th.classList.toggle('active', th.dataset.sort === field);
     const arrow = th.querySelector('.sort-arrow');
@@ -639,18 +518,15 @@ function onSortColumn(field, table) {
 // ── Utility ────────────────────────────────────────────────────
 
 function estimate24hViews(channel) {
-  // Estimate based on recent video views from the last 24 hours
   const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
   const recentVideos = allVideos.filter(
     v => v.channelId === channel.id && new Date(v.publishedAt).getTime() >= oneDayAgo
   );
 
   if (recentVideos.length > 0) {
-    // Sum views from videos published in last 24 hours
     return recentVideos.reduce((sum, v) => sum + v.views, 0);
   }
 
-  // Fallback: estimate from most recent videos' average daily rate
   const channelVideos = allVideos.filter(v => v.channelId === channel.id);
   if (channelVideos.length === 0) return 0;
 
@@ -662,6 +538,20 @@ function estimate24hViews(channel) {
   });
 
   return Math.round(totalDailyRate);
+}
+
+function calculateChannelAverage(channel) {
+  const channelVideos = allVideos.filter(v => v.channelId === channel.id);
+  if (channelVideos.length === 0) return 0;
+
+  let totalDailyRate = 0;
+  channelVideos.forEach(v => {
+    const ageMs = Date.now() - new Date(v.publishedAt).getTime();
+    const ageDays = Math.max(ageMs / (24 * 60 * 60 * 1000), 1);
+    totalDailyRate += v.views / ageDays;
+  });
+
+  return Math.round(totalDailyRate / channelVideos.length);
 }
 
 function formatNumber(n) {
