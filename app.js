@@ -9,7 +9,7 @@ const CHANNEL_IDS = [
 ];
 
 const CALENDAR_ID = 'primary'; // Set to your shared calendar ID or 'primary' for default
-const CHANNEL_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6'];
+const FALLBACK_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6']; // Fallback if extraction fails
 const REFRESH_INTERVAL = 60_000; // 1 minute for subscriber count refresh
 
 let channelData = [];
@@ -65,6 +65,81 @@ async function ytFetch(endpoint, params) {
   return res.json();
 }
 
+// ── Color Extraction ───────────────────────────────────────────────
+
+async function extractChannelColor(thumbnailUrl, fallbackColor) {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+
+      img.onload = () => {
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+
+          const imageData = ctx.getImageData(0, 0, img.width, img.height);
+          const data = imageData.data;
+
+          // Sample pixels and calculate color frequency
+          const colorMap = {};
+          const step = 4; // Sample every nth pixel for performance
+
+          for (let i = 0; i < data.length; i += step * 4) {
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const a = data[i + 3];
+
+            // Skip transparent pixels and nearly white/black
+            if (a < 128) continue;
+            if ((r + g + b) > 750 || (r + g + b) < 30) continue;
+
+            const hex = rgbToHex(r, g, b);
+            colorMap[hex] = (colorMap[hex] || 0) + 1;
+          }
+
+          // Find most frequent vibrant color
+          let dominantColor = fallbackColor;
+          let maxCount = 0;
+
+          for (const [color, count] of Object.entries(colorMap)) {
+            if (count > maxCount) {
+              maxCount = count;
+              dominantColor = color;
+            }
+          }
+
+          resolve(dominantColor);
+        } catch (err) {
+          console.warn(`Error extracting color from ${thumbnailUrl}:`, err);
+          resolve(fallbackColor);
+        }
+      };
+
+      img.onerror = () => {
+        console.warn(`Failed to load thumbnail: ${thumbnailUrl}`);
+        resolve(fallbackColor);
+      };
+
+      img.src = thumbnailUrl;
+    } catch (err) {
+      console.warn(`Error in color extraction: ${err.message}`);
+      resolve(fallbackColor);
+    }
+  });
+}
+
+function rgbToHex(r, g, b) {
+  return '#' + [r, g, b].map(x => {
+    const hex = x.toString(16);
+    return hex.length === 1 ? '0' + hex : hex;
+  }).join('');
+}
+
 // ── Data Fetching ──────────────────────────────────────────────
 
 async function fetchAllData() {
@@ -76,7 +151,8 @@ async function fetchAllData() {
       id: CHANNEL_IDS.join(','),
     });
 
-    channelData = (channelRes.items || []).map((ch, i) => ({
+    // First, create channel data with basic info
+    const baseChannelData = (channelRes.items || []).map((ch, i) => ({
       id: ch.id,
       title: ch.snippet.title,
       customUrl: ch.snippet.customUrl || '',
@@ -84,8 +160,15 @@ async function fetchAllData() {
       subscribers: parseInt(ch.statistics.subscriberCount, 10) || 0,
       totalViews: parseInt(ch.statistics.viewCount, 10) || 0,
       videoCount: parseInt(ch.statistics.videoCount, 10) || 0,
-      color: CHANNEL_COLORS[i % CHANNEL_COLORS.length],
+      fallbackColor: FALLBACK_COLORS[i % FALLBACK_COLORS.length],
     }));
+
+    // Then extract colors from thumbnails in parallel
+    const colorPromises = baseChannelData.map((ch, i) =>
+      extractChannelColor(ch.thumbnail, ch.fallbackColor)
+        .then(color => ({ ...ch, color }))
+    );
+    channelData = await Promise.all(colorPromises);
 
     // Fetch recent videos for each channel
     const videoPromises = channelData.map(ch => fetchRecentVideos(ch));
