@@ -4,12 +4,12 @@ const API_KEY = 'AIzaSyAy2lvTU_Uurhxp6BXS_8yOBvsd0B1OMN4';
 const CHANNEL_IDS = [
   'UCj87bMLg-sb319zhcJrxz6A',  // Spectator
   'UCMxiv15iK_MFayY_3fU9loQ',  // UnHerd
-  'UCJMC-44oT9l97ra5iemDPiA',  // Channel 3
-  'UChvbiD-vtewbaXD71UCa-pA',  // Channel 4
+  'UCJMC-44oT9l97ra5iemDPiA',  // Quite Right
+  'UChvbiD-vtewbaXD71UCa-pA',  // Econoclasts
 ];
 
 const CALENDAR_ID = 'primary'; // Set to your shared calendar ID or 'primary' for default
-const FALLBACK_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6']; // Fallback if extraction fails
+const FALLBACK_COLORS = ['#e74c3c', '#3498db', '#ffffff', '#1abc9c']; // Spectator (red), UnHerd (blue), Quite Right (white), Econoclasts (turquoise)
 const REFRESH_INTERVAL = 60_000; // 1 minute for subscriber count refresh
 
 let channelData = [];
