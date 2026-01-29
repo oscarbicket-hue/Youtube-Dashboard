@@ -440,6 +440,29 @@ header {
   margin-bottom: 1rem;
 }
 
+.rank-badge {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.35rem 0.6rem;
+  border-radius: 4px;
+  margin-bottom: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-box.performance-highlight {
+  background: rgba(230, 126, 34, 0.08);
+  border: 1px solid rgba(230, 126, 34, 0.15);
+}
+
+.performance-value {
+  color: #f39c12;
+  font-size: 1.4rem;
+}
+
 /* Sections */
 .section {
   padding: 1.5rem 2rem;
