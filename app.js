@@ -99,9 +99,7 @@ async function fetchAllData() {
 
     // Render everything
     renderNextRecording();
-    renderTopPerformer();
     renderChannelCards();
-    renderViewsChart();
     renderLineChart();
     populateChannelFilter();
     renderVideosTable();
@@ -170,7 +168,6 @@ async function fetchSubscriberCounts() {
       }
     });
 
-    renderTopPerformer();
     renderChannelCards();
     updateTimestamp();
   } catch (err) {
@@ -279,67 +276,19 @@ function renderNextRecording() {
   `;
 }
 
-function renderTopPerformer() {
-  const banner = document.getElementById('top-performer-banner');
-  if (channelData.length === 0) {
-    banner.classList.add('hidden');
-    return;
-  }
-
-  let topChannel = null;
-  let topViews = -1;
-  channelData.forEach(ch => {
-    const est = estimate24hViews(ch);
-    if (est > topViews) {
-      topViews = est;
-      topChannel = ch;
-    }
-  });
-
-  if (!topChannel) {
-    banner.classList.add('hidden');
-    return;
-  }
-
-  const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-  const recentCount = allVideos.filter(
-    v => v.channelId === topChannel.id && new Date(v.publishedAt).getTime() >= oneDayAgo
-  ).length;
-
-  banner.classList.remove('hidden');
-  banner.innerHTML = `
-    <div class="top-performer-icon">&#9733;</div>
-    <div class="top-performer-content">
-      <div class="top-performer-label">Top Performer — Last 24 Hours</div>
-      <div class="top-performer-channel" style="color: ${topChannel.color === '#ffffff' ? '#fff' : topChannel.color}">
-        ${escapeHtml(topChannel.title)}
-      </div>
-      <div class="top-performer-stats">
-        <span>Est. Views: <span class="top-performer-stat-value">${formatNumber(topViews)}</span></span>
-        <span>Subscribers: <span class="top-performer-stat-value">${formatNumber(topChannel.subscribers)}</span></span>
-        <span>Videos (24h): <span class="top-performer-stat-value">${recentCount}</span></span>
-      </div>
-    </div>
-    <img class="channel-avatar" src="${topChannel.thumbnail}" alt="${escapeHtml(topChannel.title)}" />
-  `;
-}
-
 function renderChannelCards() {
   const container = document.getElementById('channel-cards');
 
-  let topId = null;
-  let topViews = -1;
-  channelData.forEach(ch => {
-    const est = estimate24hViews(ch);
-    if (est > topViews) {
-      topViews = est;
-      topId = ch.id;
-    }
+  // Sort channels by 48h views (highest to lowest for left-to-right ranking)
+  const sortedChannels = [...channelData].sort((a, b) => {
+    const viewsA = estimate48hViews(a);
+    const viewsB = estimate48hViews(b);
+    return viewsB - viewsA;
   });
 
-  container.innerHTML = channelData.map((ch) => {
+  container.innerHTML = sortedChannels.map((ch, rank) => {
+    const currentViews = estimate48hViews(ch);
     const avgViews = calculateChannelAverage(ch);
-    const currentViews = estimate24hViews(ch);
     const isBeating = currentViews >= avgViews;
     const diffPercent = avgViews > 0 ? Math.round(((currentViews - avgViews) / avgViews) * 100) : 0;
     const performanceText = isBeating
@@ -348,8 +297,9 @@ function renderChannelCards() {
     const performanceColor = isBeating ? '#2ecc71' : '#e74c3c';
 
     return `
-      <div class="channel-card${ch.id === topId ? ' top-channel' : ''}">
+      <div class="channel-card${rank === 0 ? ' top-channel' : ''}">
         <div class="channel-color-bar" style="background: ${ch.color}"></div>
+        <div class="rank-badge">#${rank + 1}</div>
         <div class="channel-card-header">
           <img class="channel-avatar" src="${ch.thumbnail}" alt="${ch.title}" />
           <div>
@@ -370,9 +320,9 @@ function renderChannelCards() {
             <div class="stat-label">Videos</div>
             <div class="stat-value videos">${formatNumber(ch.videoCount)}</div>
           </div>
-          <div class="stat-box">
-            <div class="stat-label">Est. 24h Views</div>
-            <div class="stat-value recent-views">${formatNumber(currentViews)}</div>
+          <div class="stat-box performance-highlight">
+            <div class="stat-label">48h Performance</div>
+            <div class="stat-value recent-views performance-value">${formatNumber(currentViews)}</div>
             <div class="performance-indicator" style="color: ${performanceColor}; font-size: 0.85em; margin-top: 0.25rem;">
               ${performanceText}
             </div>
@@ -383,26 +333,7 @@ function renderChannelCards() {
   }).join('');
 }
 
-function renderViewsChart() {
-  const container = document.getElementById('views-chart');
-  const estimates = channelData.map(ch => estimate24hViews(ch));
-  const maxViews = Math.max(...estimates, 1);
-
-  container.innerHTML = channelData.map((ch, i) => {
-    const heightPct = (estimates[i] / maxViews) * 100;
-    return `
-      <div class="chart-bar-group">
-        <div class="channel-label" style="color: ${ch.color}">${escapeHtml(ch.title)}</div>
-        <div class="chart-bar-wrapper">
-          <div class="chart-bar" style="height: ${Math.max(heightPct, 5)}%; background: ${ch.color}"></div>
-        </div>
-        <div class="chart-bar-value" style="color: ${ch.color}">${formatNumber(estimates[i])}</div>
-      </div>
-    `;
-  }).join('');
-}
-
-// ── 30-Day Line Chart ──────────────────────────────────────────
+// ── 60-Day Line Chart (Weekly) ──────────────────────────────────
 
 function renderLineChart() {
   const canvas = document.getElementById('performance-canvas');
@@ -424,28 +355,29 @@ function renderLineChart() {
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
 
-  // Generate 30-day data for each channel
+  // Generate 60-day data in weekly intervals
   const now = new Date();
-  const days = [];
-  for (let i = 29; i >= 0; i--) {
+  const weeks = [];
+  for (let i = 8; i >= 0; i--) {
     const d = new Date(now);
-    d.setDate(d.getDate() - i);
+    d.setDate(d.getDate() - (i * 7));
     d.setHours(0, 0, 0, 0);
-    days.push(d);
+    weeks.push(d);
   }
 
-  const channelDailyData = channelData.map(ch => {
-    return days.map(day => {
-      const dayStart = day.getTime();
-      const dayEnd = dayStart + 24 * 60 * 60 * 1000;
-      const dayVideos = allVideos.filter(v =>
+  const channelWeeklyData = channelData.map(ch => {
+    return weeks.map((weekStart, weekIdx) => {
+      const weekEnd = new Date(weekStart);
+      weekEnd.setDate(weekEnd.getDate() + 7);
+
+      const weekVideos = allVideos.filter(v =>
         v.channelId === ch.id &&
-        new Date(v.publishedAt).getTime() >= dayStart &&
-        new Date(v.publishedAt).getTime() < dayEnd
+        new Date(v.publishedAt).getTime() >= weekStart.getTime() &&
+        new Date(v.publishedAt).getTime() < weekEnd.getTime()
       );
 
-      if (dayVideos.length > 0) {
-        return dayVideos.reduce((sum, v) => sum + v.views, 0);
+      if (weekVideos.length > 0) {
+        return weekVideos.reduce((sum, v) => sum + v.views, 0);
       }
 
       const channelVideos = allVideos.filter(v => v.channelId === ch.id);
@@ -459,11 +391,11 @@ function renderLineChart() {
       });
 
       const variation = 0.8 + Math.random() * 0.4;
-      return Math.round(totalDailyRate * variation);
+      return Math.round(totalDailyRate * 7 * variation);
     });
   });
 
-  const allValues = channelDailyData.flat();
+  const allValues = channelWeeklyData.flat();
   const maxVal = Math.max(...allValues, 1);
   const niceMax = niceNumber(maxVal);
 
@@ -487,20 +419,22 @@ function renderLineChart() {
     ctx.fillText(formatNumber(Math.round(val)), padding.left - 10, y + 4);
   }
 
-  // Draw X-axis labels
+  // Draw X-axis labels (weekly)
   ctx.fillStyle = '#717171';
   ctx.font = '11px Inter, sans-serif';
   ctx.textAlign = 'center';
-  days.forEach((day, i) => {
-    const x = padding.left + (chartW / (days.length - 1)) * i;
-    const label = day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    if (i % 3 === 0 || i === days.length - 1) {
+  weeks.forEach((week, i) => {
+    const x = padding.left + (chartW / (weeks.length - 1)) * i;
+    const weekEnd = new Date(week);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    const label = `${week.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}-${weekEnd.toLocaleDateString('en-US', { day: 'numeric' })}`;
+    if (i % 2 === 0 || i === weeks.length - 1) {
       ctx.fillText(label, x, height - padding.bottom + 20);
     }
   });
 
   // Draw lines for each channel
-  channelDailyData.forEach((data, chIdx) => {
+  channelWeeklyData.forEach((data, chIdx) => {
     const color = channelData[chIdx].color;
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
@@ -509,7 +443,7 @@ function renderLineChart() {
     ctx.beginPath();
 
     data.forEach((val, i) => {
-      const x = padding.left + (chartW / (days.length - 1)) * i;
+      const x = padding.left + (chartW / (weeks.length - 1)) * i;
       const y = padding.top + chartH - (val / niceMax) * chartH;
       if (i === 0) {
         ctx.moveTo(x, y);
@@ -520,7 +454,7 @@ function renderLineChart() {
     ctx.stroke();
 
     data.forEach((val, i) => {
-      const x = padding.left + (chartW / (days.length - 1)) * i;
+      const x = padding.left + (chartW / (weeks.length - 1)) * i;
       const y = padding.top + chartH - (val / niceMax) * chartH;
       ctx.fillStyle = color;
       ctx.beginPath();
@@ -675,6 +609,29 @@ function onSortColumn(field, table) {
 }
 
 // ── Utility ────────────────────────────────────────────────────
+
+function estimate48hViews(channel) {
+  const twoDaysAgo = Date.now() - 48 * 60 * 60 * 1000;
+  const recentVideos = allVideos.filter(
+    v => v.channelId === channel.id && new Date(v.publishedAt).getTime() >= twoDaysAgo
+  );
+
+  if (recentVideos.length > 0) {
+    return recentVideos.reduce((sum, v) => sum + v.views, 0);
+  }
+
+  const channelVideos = allVideos.filter(v => v.channelId === channel.id);
+  if (channelVideos.length === 0) return 0;
+
+  let totalDailyRate = 0;
+  channelVideos.slice(0, 5).forEach(v => {
+    const ageMs = Date.now() - new Date(v.publishedAt).getTime();
+    const ageDays = Math.max(ageMs / (24 * 60 * 60 * 1000), 1);
+    totalDailyRate += v.views / ageDays;
+  });
+
+  return Math.round(totalDailyRate * 2);
+}
 
 function estimate24hViews(channel) {
   const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
