@@ -10,6 +10,9 @@ const CHANNEL_IDS = [
 
 const CALENDAR_ID = 'primary'; // Set to your shared calendar ID or 'primary' for default
 const CHANNEL_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6'];
+const CHANNEL_COLOR_OVERRIDES = {
+  'UCj87bMLg-sb319zhcJrxz6A': '#e74c3c', // Spectator - Red
+};
 const REFRESH_INTERVAL = 60_000; // 1 minute for subscriber count refresh
 
 let channelData = [];
@@ -145,7 +148,7 @@ async function fetchAllData() {
     const colors = await Promise.all(colorPromises);
     channelData = tempChannelData.map((ch, i) => ({
       ...ch,
-      color: colors[i],
+      color: CHANNEL_COLOR_OVERRIDES[ch.id] || colors[i],
     }));
 
     // Fetch recent videos for each channel
