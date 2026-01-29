@@ -65,6 +65,59 @@ async function ytFetch(endpoint, params) {
   return res.json();
 }
 
+// ── Color Extraction ───────────────────────────────────────────
+
+async function extractDominantColor(imageUrl) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = 64;
+        canvas.height = 64;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, 64, 64);
+
+        const imageData = ctx.getImageData(0, 0, 64, 64);
+        const data = imageData.data;
+
+        let r = 0, g = 0, b = 0;
+        let pixelCount = 0;
+
+        // Sample every 4th pixel to speed up calculation
+        for (let i = 0; i < data.length; i += 16) {
+          // Skip very dark pixels (backgrounds)
+          if (data[i] + data[i + 1] + data[i + 2] > 50) {
+            r += data[i];
+            g += data[i + 1];
+            b += data[i + 2];
+            pixelCount++;
+          }
+        }
+
+        if (pixelCount === 0) {
+          resolve('#999999');
+          return;
+        }
+
+        r = Math.round(r / pixelCount);
+        g = Math.round(g / pixelCount);
+        b = Math.round(b / pixelCount);
+
+        const hex = '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+        resolve(hex);
+      } catch (err) {
+        resolve('#999999');
+      }
+    };
+
+    img.onerror = () => resolve('#999999');
+    img.src = imageUrl;
+  });
+}
+
 // ── Data Fetching ──────────────────────────────────────────────
 
 async function fetchAllData() {
@@ -76,7 +129,7 @@ async function fetchAllData() {
       id: CHANNEL_IDS.join(','),
     });
 
-    channelData = (channelRes.items || []).map((ch, i) => ({
+    const tempChannelData = (channelRes.items || []).map((ch, i) => ({
       id: ch.id,
       title: ch.snippet.title,
       customUrl: ch.snippet.customUrl || '',
@@ -85,6 +138,14 @@ async function fetchAllData() {
       totalViews: parseInt(ch.statistics.viewCount, 10) || 0,
       videoCount: parseInt(ch.statistics.videoCount, 10) || 0,
       color: CHANNEL_COLORS[i % CHANNEL_COLORS.length],
+    }));
+
+    // Extract dominant colors from channel thumbnails
+    const colorPromises = tempChannelData.map(ch => extractDominantColor(ch.thumbnail));
+    const colors = await Promise.all(colorPromises);
+    channelData = tempChannelData.map((ch, i) => ({
+      ...ch,
+      color: colors[i],
     }));
 
     // Fetch recent videos for each channel
