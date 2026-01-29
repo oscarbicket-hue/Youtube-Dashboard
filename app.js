@@ -8,6 +8,7 @@ const CHANNEL_IDS = [
   'UChvbiD-vtewbaXD71UCa-pA',  // Channel 4
 ];
 
+const CALENDAR_ID = 'primary'; // Set to your shared calendar ID or 'primary' for default
 const CHANNEL_COLORS = ['#ffffff', '#3498db', '#2ecc71', '#9b59b6'];
 const REFRESH_INTERVAL = 60_000; // 1 minute for subscriber count refresh
 
@@ -16,7 +17,7 @@ let allVideos = [];
 let regularVideos = [];
 let shortsVideos = [];
 let refreshTimer = null;
-let currentSort = { videos: { field: 'views', direction: 'desc' }, shorts: { field: 'views', direction: 'desc' } };
+let currentSort = { videos: { field: 'published', direction: 'desc' }, shorts: { field: 'published', direction: 'desc' } };
 
 // ── Bootstrap ──────────────────────────────────────────────────
 
@@ -93,7 +94,11 @@ async function fetchAllData() {
 
     separateVideoTypes();
 
+    // Fetch next recording from calendar
+    fetchNextRecording().catch(err => console.error('Calendar fetch failed:', err));
+
     // Render everything
+    renderNextRecording();
     renderTopPerformer();
     renderChannelCards();
     renderViewsChart();
@@ -173,6 +178,46 @@ async function fetchSubscriberCounts() {
   }
 }
 
+// ── Google Calendar ────────────────────────────────────────────
+
+let nextRecording = null;
+
+async function fetchNextRecording() {
+  try {
+    const now = new Date().toISOString();
+    const res = await fetch(
+      `https://www.googleapis.com/calendar/v3/calendars/${CALENDAR_ID}/events?` +
+      `key=${API_KEY}&` +
+      `timeMin=${now}&` +
+      `maxResults=1&` +
+      `orderBy=startTime&` +
+      `singleEvents=true`
+    );
+
+    if (!res.ok) {
+      console.warn('Calendar API not available or not configured');
+      nextRecording = null;
+      return;
+    }
+
+    const data = await res.json();
+    const events = data.items || [];
+    if (events.length > 0) {
+      const event = events[0];
+      nextRecording = {
+        title: event.summary,
+        start: event.start.dateTime || event.start.date,
+        description: event.description || '',
+      };
+    } else {
+      nextRecording = null;
+    }
+  } catch (err) {
+    console.error('Failed to fetch calendar:', err);
+    nextRecording = null;
+  }
+}
+
 // ── Video Type Separation ──────────────────────────────────────
 
 function isYouTubeShort(duration, title) {
@@ -194,11 +239,45 @@ function separateVideoTypes() {
   regularVideos = allVideos.filter(v => !v.isShort);
   shortsVideos = allVideos.filter(v => v.isShort);
 
-  regularVideos.sort((a, b) => b.views - a.views);
-  shortsVideos.sort((a, b) => b.views - a.views);
+  // Sort by publication date (newest first)
+  regularVideos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+  shortsVideos.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
 }
 
 // ── Rendering ──────────────────────────────────────────────────
+
+function renderNextRecording() {
+  const section = document.getElementById('next-recording-section');
+  if (!nextRecording) {
+    section.classList.add('hidden');
+    return;
+  }
+
+  const startDate = new Date(nextRecording.start);
+  const now = new Date();
+  const isToday = startDate.toDateString() === now.toDateString();
+  const isSoon = (startDate.getTime() - now.getTime()) < 24 * 60 * 60 * 1000;
+
+  const timeStr = startDate.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true
+  });
+  const dateStr = isToday ? 'Today' : startDate.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric'
+  });
+
+  section.classList.remove('hidden');
+  section.innerHTML = `
+    <div class="next-recording-icon">&#x1f4F9;</div>
+    <div class="next-recording-content">
+      <div class="next-recording-label">Next Recording</div>
+      <div class="next-recording-title">${escapeHtml(nextRecording.title)}</div>
+      <div class="next-recording-time">${dateStr} at ${timeStr}</div>
+    </div>
+  `;
+}
 
 function renderTopPerformer() {
   const banner = document.getElementById('top-performer-banner');
@@ -509,7 +588,7 @@ function renderVideosTable() {
     return sort.direction === 'desc' ? -cmp : cmp;
   });
 
-  videos = videos.slice(0, 15);
+  videos = videos.slice(0, 6);
 
   tbody.innerHTML = videos.map((v, idx) => `
     <tr>
@@ -550,7 +629,7 @@ function renderShortsTable() {
     return sort.direction === 'desc' ? -cmp : cmp;
   });
 
-  videos = videos.slice(0, 15);
+  videos = videos.slice(0, 6);
 
   tbody.innerHTML = videos.map((v, idx) => `
     <tr>
