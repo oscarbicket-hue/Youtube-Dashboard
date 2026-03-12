@@ -198,13 +198,13 @@ async function fetchAllData() {
 
 async function fetchRecentVideos(channel) {
   try {
-    // Step 1: Search for recent uploads
+    // Step 1: Search for recent uploads (fetch more to get better accuracy after filtering shorts)
     const searchRes = await ytFetch('search', {
       part: 'snippet',
       channelId: channel.id,
       order: 'date',
       type: 'video',
-      maxResults: 15,
+      maxResults: 25,
     });
 
     const videoIds = (searchRes.items || []).map(v => v.id.videoId).filter(Boolean);
@@ -301,16 +301,25 @@ async function fetchNextRecording() {
 // ── Video Type Separation ──────────────────────────────────────
 
 function isYouTubeShort(duration, title) {
+  // Check for #shorts or #short in title (explicit marker)
+  const titleLower = title.toLowerCase();
+  if (titleLower.includes('#shorts') || titleLower.includes('#short')) return true;
+
+  // Parse ISO 8601 duration format (e.g., PT1M30S)
   const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
-  if (!match) return false;
+  if (!match) {
+    // If duration cannot be parsed but title suggests it's a short, mark as short
+    return false;
+  }
 
   const hours = parseInt(match[1] || '0', 10);
   const minutes = parseInt(match[2] || '0', 10);
   const seconds = parseInt(match[3] || '0', 10);
   const totalSeconds = hours * 3600 + minutes * 60 + seconds;
 
-  if (totalSeconds <= 60 && totalSeconds > 0) return true;
-  if (title.toLowerCase().includes('#shorts') || title.toLowerCase().includes('#short')) return true;
+  // YouTube Shorts must be <= 60 seconds (and > 0 to avoid edge cases)
+  // Being more strict to catch all shorts
+  if (totalSeconds > 0 && totalSeconds <= 60) return true;
 
   return false;
 }
@@ -391,6 +400,13 @@ function renderChannelCards() {
           </div>
         </div>
         <div class="channel-stats">
+          <div class="stat-box performance-highlight full-width">
+            <div class="stat-label">48h Views</div>
+            <div class="stat-value recent-views performance-value large">${formatNumber(currentViews)}</div>
+            <div class="performance-indicator" style="color: ${performanceColor}; font-size: 0.85em; margin-top: 0.35rem;">
+              ${performanceText}
+            </div>
+          </div>
           <div class="stat-box">
             <div class="stat-label">Subscribers</div>
             <div class="stat-value subscribers">${formatNumber(ch.subscribers)}</div>
@@ -402,13 +418,6 @@ function renderChannelCards() {
           <div class="stat-box">
             <div class="stat-label">Videos</div>
             <div class="stat-value videos">${formatNumber(ch.videoCount)}</div>
-          </div>
-          <div class="stat-box performance-highlight">
-            <div class="stat-label">48h Performance</div>
-            <div class="stat-value recent-views performance-value">${formatNumber(currentViews)}</div>
-            <div class="performance-indicator" style="color: ${performanceColor}; font-size: 0.85em; margin-top: 0.25rem;">
-              ${performanceText}
-            </div>
           </div>
         </div>
       </div>

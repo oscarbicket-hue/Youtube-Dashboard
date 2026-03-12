@@ -458,9 +458,19 @@ header {
   border: 1px solid rgba(230, 126, 34, 0.15);
 }
 
+.stat-box.full-width {
+  grid-column: 1 / -1;
+  padding: 1rem;
+}
+
 .performance-value {
   color: #f39c12;
   font-size: 1.4rem;
+}
+
+.performance-value.large {
+  font-size: 2.2rem;
+  margin-bottom: 0.25rem;
 }
 
 /* Sections */
